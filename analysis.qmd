@@ -1,0 +1,117 @@
+
+---
+title: "Wildfires"
+author: "Madison Goin"
+execute:
+  echo: false
+---
+
+```{r}
+#| message: false
+library(tidyverse)
+library(purrr)
+library(leaflet)
+library(jsonlite)
+```
+
+```{r}
+raw <- jsonlite::fromJSON(
+  "data/wildfires.geojson",
+  simplifyVector = FALSE
+)
+
+length(raw$features)
+```
+
+```{r}
+# Extract the first fire
+fire <- raw$features[[1]]
+
+# Show its component names
+names(fire)
+
+# Extract the first coordinate pair of its boundary
+fire$geometry$coordinates[[1]][[1]]
+```
+
+
+```{r}
+#| cache: true
+fires <- tibble(features = raw$features) |>
+  unnest_wider(features) |>
+  unnest_wider(properties) |>
+  unnest_wider(
+    geometry,
+    names_sep = "_"
+  ) |>
+  select(
+    incident,
+    gis_acres,
+    fire_year,
+    agency,
+    state,
+    geometry_coordinates
+  ) |>
+  mutate(
+    gis_acres = as.numeric(gis_acres),
+    fire_year = as.integer(fire_year)
+  )
+```
+
+```{r}
+fires |>
+  filter(!is.na(state)) |>
+  group_by(state) |>
+  summarise(total_acres = sum(gis_acres, na.rm = TRUE)) |>
+  slice_max(total_acres, n = 10, with_ties = FALSE) |>
+  ggplot(aes(x = fct_reorder(state, total_acres), y = total_acres)) +
+  geom_col() +
+  coord_flip() +
+  labs(
+    title = "Top 10 States by Acres Burned",
+    x = "State",
+    y = "Total acres burned",
+    caption = "States are ranked by the sum of reported GIS acres."
+  )
+```
+
+
+```{r}
+big_fires <- fires |>
+  slice_max(gis_acres, n = 10, with_ties = FALSE) |>
+  mutate(
+    geometry = sf::st_sfc(
+      map(
+        geometry_coordinates,
+        \(rings) sf::st_polygon(
+          map(rings, \(ring) do.call(rbind, map(ring, unlist)))
+        )
+      ),
+      crs = 4326
+    )
+  ) |>
+  sf::st_as_sf()
+
+```
+
+
+```{r}
+bounds <- sf::st_bbox(big_fires)
+
+leaflet(big_fires) |>
+  addProviderTiles("CartoDB.Positron") |>
+  fitBounds(
+    bounds["xmin"],
+    bounds["ymin"],
+    bounds["xmax"],
+    bounds["ymax"]
+  ) |>
+  addPolygons(
+    popup = ~paste0(
+      "<strong>", incident, "</strong><br>",
+      "Year: ", fire_year, "<br>",
+      "Acres: ", format(round(gis_acres), big.mark = ",")
+    )
+  )
+```
+
